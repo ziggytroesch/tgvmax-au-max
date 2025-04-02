@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <title>Au Max - Recherche TGVmax intelligente</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 40px; }
+    input, button, select { padding: 10px; margin: 10px 0; width: 300px; }
+    #results { margin-top: 30px; }
+    ul { padding-left: 20px; }
+  </style>
+</head>
+<body>
+  <h1>Au Max</h1>
+  <p>Créez votre itinéraire TGVmax — même avec plusieurs correspondances !</p>
+
+  <label>Gare de départ :</label><br>
+  <input list="stations" id="from" placeholder="Ex: PARIS MONTPARNASSE"><br>
+
+  <label>Gare d'arrivée :</label><br>
+  <input list="stations" id="to" placeholder="Ex: LYON PART DIEU"><br>
+
+  <label>Date :</label><br>
+  <input type="date" id="date"><br>
+
+  <label>Heure de départ minimale :</label><br>
+  <input type="time" id="startTime"><br>
+
+  <label>Heure de départ maximale :</label><br>
+  <input type="time" id="endTime"><br>
+
+  <button onclick="searchAdvanced()">Rechercher</button>
+
+  <datalist id="stations">
+    <option value="PARIS MONTPARNASSE">
+    <option value="PARIS GARE DE LYON">
+    <option value="PARIS GARE DU NORD">
+    <option value="PARIS SAINT-LAZARE">
+    <option value="LYON PART DIEU">
+    <option value="LE CREUSOT TGV">
+    <option value="AIX-EN-PROVENCE TGV">
+    <option value="AVIGNON TGV">
+    <option value="VALENCE TGV">
+    <option value="BORDEAUX SAINT JEAN">
+    <option value="MARSEILLE SAINT CHARLES">
+    <option value="RENNES">
+    <option value="NANTES">
+    <option value="LILLE EUROPE">
+    <option value="STRASBOURG">
+    <option value="NICE VILLE">
+    <option value="TOULOUSE MATABIAU">
+    <option value="MASSY TGV">
+    <option value="MARNE LA VALLÉE CHESSY">
+    <option value="AÉROPORT CHARLES DE GAULLE 2 TGV">
+    <option value="ANGERS SAINT LAUD">
+    <option value="LE MANS">
+    <!-- Ajoutez-en plus si nécessaire -->
+  </datalist>
+
+  <div id="results"></div>
+
+  <script>
+    function toMinutes(t) {
+      const [h, m] = t.split(":").map(Number);
+      return h * 60 + m;
+    }
+
+    function formatTime(str) {
+      return str.slice(0, 5);
+    }
+
+    async function searchAdvanced() {
+      const from = document.getElementById('from').value.toUpperCase();
+      const to = document.getElementById('to').value.toUpperCase();
+      const date = document.getElementById('date').value;
+      const startTime = document.getElementById('startTime').value;
+      const endTime = document.getElementById('endTime').value;
+      const resultsDiv = document.getElementById('results');
+      resultsDiv.innerHTML = "Chargement...";
+
+      try {
+        const url = `https://data.sncf.com/api/records/1.0/search/?dataset=tgvmax&q=&rows=1000&refine.date=${date}`;
+        const res = await fetch(url);
+        const data = await res.json();
+        const trains = data.records.map(r => r.fields);
+
+        const filteredTrains = trains.filter(t => {
+          const mins = toMinutes(t.departure_time);
+          return (!startTime || mins >= toMinutes(startTime)) &&
+                 (!endTime || mins <= toMinutes(endTime));
+        });
+
+        const itineraries = [];
+
+        function findRoutes(path, visited, currentStation, goal, depth = 0) {
+          if (depth > 2) return; // Max 3 étapes
+          const currentTime = path.length ? path[path.length - 1].arrival_time : null;
+
+          filteredTrains
+            .filter(t => t.origine === currentStation && !visited.includes(t.destination))
+            .forEach(t => {
+              if (currentTime) {
+                const wait = (new Date(`${date}T${t.departure_time}`) - new Date(`${date}T${currentTime}`)) / 60000;
+                if (wait < 15 || wait > 120) return; // invalid correspondance
+              }
+
+              const newPath = [...path, t];
+              if (t.destination === goal) {
+                itineraries.push(newPath);
+              } else {
+                findRoutes(newPath, [...visited, t.destination], t.destination, goal, depth + 1);
+              }
+            });
+        }
+
+        findRoutes([], [from], from, to);
+
+        if (itineraries.length === 0) {
+          resultsDiv.innerHTML = "<p>Aucun trajet trouvé avec ou sans correspondance.</p>";
+          return;
+        }
+
+        itineraries.sort((a, b) => {
+          const d1 = new Date(`${date}T${a[0].departure_time}`);
+          const a1 = new Date(`${date}T${a[a.length - 1].arrival_time}`);
+          const total1 = (a1 - d1) / 60000;
+
+          const d2 = new Date(`${date}T${b[0].departure_time}`);
+          const a2 = new Date(`${date}T${b[b.length - 1].arrival_time}`);
+          const total2 = (a2 - d2) / 60000;
+
+          return total1 - total2;
+        });
+
+        let html = `<h3>Itinéraires disponibles (${itineraries.length}) :</h3><ul>`;
+        itineraries.forEach(path => {
+          html += `<li>`;
+          path.forEach((seg, idx) => {
+            html += `<strong>${seg.origine} → ${seg.destination}</strong> (${formatTime(seg.departure_time)} → ${formatTime(seg.arrival_time)})<br>`;
+            if (idx < path.length - 1) {
+              const wait = (new Date(`${date}T${path[idx + 1].departure_time}`) - new Date(`${date}T${seg.arrival_time}`)) / 60000;
+              html += `🕐 Correspondance : ${Math.round(wait)} min<br>`;
+            }
+          });
+          const totalTime = (new Date(`${date}T${path[path.length - 1].arrival_time}`) - new Date(`${date}T${path[0].departure_time}`)) / 60000;
+          html += `⏱ Temps total : ${Math.round(totalTime)} min</li><br>`;
+        });
+        html += "</ul>";
+
+        resultsDiv.innerHTML = html;
+
+      } catch (err) {
+        resultsDiv.innerHTML = "<p>Erreur lors de la recherche. Vérifiez votre connexion.</p>";
+      }
+    }
+  </script>
+</body>
+</html>
